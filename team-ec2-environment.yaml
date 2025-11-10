@@ -1,0 +1,789 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::LanguageExtensions
+Description: "Development Environment with EC2 instance, VPC, SSM access, and individual IAM users"
+# 説明: EC2インスタンス、VPC、SSMアクセス、個別IAMユーザーを含む開発環境
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "team name"
+        Parameters:
+          - TeamMembers
+      - Label:
+          default: "instance type"
+        Parameters:
+          - InstanceType
+      - Label:
+          default: "network configuration"
+        Parameters:
+          - VpcCidr
+          - PublicSubnetCidr
+          - PrivateSubnetCidr
+    ParameterLabels:
+      TeamMembers:
+        default: "team member name"
+      InstanceType:
+        default: "EC2 instance type"
+      VpcCidr:
+        default: "VPC CIDR block"
+      PublicSubnetCidr:
+        default: "public subnet CIDR block"
+      PrivateSubnetCidr:
+        default: "private subnet CIDR block"
+
+  # Documentation:
+  #   Description: |
+  #     このCloudFormationテンプレートは、以下のコンポーネントを含む完全でセキュアなチーム開発環境を作成します：
+  #
+  #     インフラストラクチャ:
+  #     - パブリック・プライベートサブネットを持つVPC (10.0.0.0/16)
+  #     - セキュアなインターネットアクセス用のInternet GatewayとNAT Gateway
+  #     - 適切なトラフィックルーティング用に設定されたルートテーブル
+  #     - 最小限の必要な権限を持つセキュリティグループ
+  #
+  #     コンピュート:
+  #     - プライベートサブネット内のEC2インスタンス (Amazon Linux 2)
+  #     - セキュアなシェルアクセス用に事前設定されたSSMエージェント
+  #     - 各チームメンバー用の個別Linuxユーザーアカウント
+  #     - トラブルシューティング用のCloudWatchログ
+  #
+  #     セキュリティ・アクセス:
+  #     - 各チームメンバー用の個別IAMユーザー
+  #     - IAMグループベースの権限管理
+  #     - SSMのみのアクセス（SSHキー不要）
+  #     - プライベートSSM接続用のVPCエンドポイント
+  #     - 最小権限アクセスポリシー
+  #
+  #     自動化:
+  #     - ユーザーアカウント自動作成用のユーザーデータスクリプト
+  #     - 簡単な参照用の包括的なCloudFormation出力
+  #     - クロススタック参照用のエクスポート値
+  #
+  #   Usage: |
+  #     デプロイメント:
+  #     1. AWSコンソール、CLI、またはCI/CDパイプライン経由でこのテンプレートをデプロイ
+  #     2. TeamMembersパラメータにチームメンバー名をカンマ区切りで提供
+  #     3. チームサイズとワークロード要件に基づいて適切なインスタンスタイプを選択
+  #     4. スタック作成の完了を待機（通常5-10分）
+  #
+  #     デプロイ後:
+  #     1. AWSコンソールで各IAMユーザーのシークレットアクセスキーを生成（セキュリティのため）
+  #     2. 各チームメンバーにアクセスキーを配布
+  #     3. チームメンバーがAWS CLIとSSM Session Managerプラグインをインストール
+  #     4. 接続: aws ssm start-session --target <instance-id>
+  #     5. 個人ユーザーアカウントに切り替え: su - <username>
+  #
+  #   Requirements: |
+  #     前提条件:
+  #     - CloudFormation権限を持つAWSアカウント
+  #     - ユーザー、ロール、ポリシーを作成するIAM権限
+  #     - インフラ作成用のEC2およびVPC権限
+  #
+  #     クライアント要件:
+  #     - AWS CLI v2.x のインストールと設定
+  #     - SSM Session Managerプラグインのインストール
+  #     - 有効なAWS認証情報（アクセスキーとシークレットキー）
+  #
+  #     ネットワーク要件:
+  #     - 初期セットアップとパッケージ更新用のインターネット接続
+  #     - SSM通信用のHTTPS (443) アウトバウンドアクセス
+  #
+  #   Security: |
+  #     セキュリティ機能:
+  #     - プライベートサブネット内のEC2インスタンス（直接インターネットアクセスなし）
+  #     - SSMのみのアクセス（SSHキーや開放ポート不要）
+  #     - リソース固有の制限を持つIAMポリシー
+  #     - プライベートAWSサービス通信用のVPCエンドポイント
+  #     - 監査証跡用のCloudWatchログ
+  #
+  #     セキュリティ考慮事項:
+  #     - アクセスキーシークレットは手動で生成し、安全に配布する必要があります
+  #     - アクセスキーの定期的なローテーションを推奨
+  #     - 異常なアクティビティについてCloudWatchログを監視
+  #     - 包括的な監査ログのためのAWS CloudTrail有効化を検討
+
+Parameters:
+  TeamMembers:
+    Type: CommaDelimitedList
+    Description: "Comma-delimited list of team member names (e.g., alice,bob,charlie,david,eve). Each name will be used to create IAM users and Linux user accounts. No limit on number of members."
+    # 説明: チームメンバー名のカンマ区切りリスト（例: alice,bob,charlie,david,eve）。各名前はIAMユーザーとLinuxユーザーアカウントの作成に使用されます。メンバー数に制限はありません。
+    Default: "member1,member2"
+    ConstraintDescription: "Must be a comma-delimited list of valid usernames (alphanumeric and hyphens only)"
+    # 制約: 有効なユーザー名（英数字とハイフンのみ）のカンマ区切りリストである必要があります
+
+  InstanceType:
+    Type: String
+    Description: "EC2 instance type for the development environment"
+    # 説明: 開発環境用のEC2インスタンスタイプ
+    Default: "t3.micro"
+    AllowedValues:
+      - "t3.micro"
+      - "t3.small"
+      - "t3.medium"
+      - "t3.large"
+    ConstraintDescription: "Must select a valid EC2 instance type from the allowed list"
+    # 制約: 許可されたリストから有効なEC2インスタンスタイプを選択する必要があります
+
+  VpcCidr:
+    Type: String
+    Description: "CIDR block for the VPC (e.g., 10.0.0.0/16)"
+    # 説明: VPCのCIDRブロック（例: 10.0.0.0/16）
+    Default: "10.0.0.0/16"
+    AllowedPattern: "^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\\/(1[6-9]|2[0-8]))$"
+    ConstraintDescription: "Must be a valid CIDR block (e.g., 10.0.0.0/16)"
+    # 制約: 有効なCIDRブロックである必要があります（例: 10.0.0.0/16）
+
+  PublicSubnetCidr:
+    Type: String
+    Description: "CIDR block for the public subnet (e.g., 10.0.1.0/24)"
+    # 説明: パブリックサブネットのCIDRブロック（例: 10.0.1.0/24）
+    Default: "10.0.1.0/24"
+    AllowedPattern: "^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\\/(1[6-9]|2[0-9]|3[0-2]))$"
+    ConstraintDescription: "Must be a valid CIDR block (e.g., 10.0.1.0/24)"
+    # 制約: 有効なCIDRブロックである必要があります（例: 10.0.1.0/24）
+
+  PrivateSubnetCidr:
+    Type: String
+    Description: "CIDR block for the private subnet (e.g., 10.0.2.0/24)"
+    # 説明: プライベートサブネットのCIDRブロック（例: 10.0.2.0/24）
+    Default: "10.0.2.0/24"
+    AllowedPattern: "^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\\/(1[6-9]|2[0-9]|3[0-2]))$"
+    ConstraintDescription: "Must be a valid CIDR block (e.g., 10.0.2.0/24)"
+    # 制約: 有効なCIDRブロックである必要があります（例: 10.0.2.0/24）
+
+# 注意: このテンプレートはTeamMembersパラメータで指定された任意の数のチームメンバーをサポートします
+# 異なるチームサイズの場合、TeamMembersパラメータを変更すると、それに応じてIAMユーザーが作成されます
+
+Resources:
+  # VPC設定
+  # チーム開発環境用のメインVPC
+  # SSM接続用のDNSサポートを持つ分離されたネットワーク空間を提供
+  TeamVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-dev-ec2-VPC"
+        - Key: Purpose
+          Value: "Team Development Environment"
+        - Key: Environment
+          Value: "Development"
+        - Key: ManagedBy
+          Value: "CloudFormation"
+
+  # NAT Gatewayとインターネット向けリソース用のパブリックサブネット
+  # プライベートサブネットリソースのアウトバウンドインターネットアクセスを有効化
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref TeamVPC
+      CidrBlock: !Ref PublicSubnetCidr
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-dev-ec2-PublicSubnet"
+        - Key: Type
+          Value: "Public"
+        - Key: Purpose
+          Value: "NAT Gateway and internet access"
+
+  # EC2インスタンスとセキュアリソース用のプライベートサブネット
+  # 開発作業用の分離された環境を提供
+  PrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref TeamVPC
+      CidrBlock: !Ref PrivateSubnetCidr
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-dev-ec2-PrivateSubnet"
+        - Key: Type
+          Value: "Private"
+        - Key: Purpose
+          Value: "EC2 instance and secure resources"
+
+  # パブリックサブネットのインターネットアクセス用Internet Gateway
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-dev-ec2-IGW"
+        - Key: Purpose
+          Value: "Internet access for public subnet"
+        - Key: ManagedBy
+          Value: "CloudFormation"
+
+  # Internet GatewayをVPCにアタッチ
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref TeamVPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # NAT Gateway用Elastic IP
+  NATGatewayEIP:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-dev-ec2-NAT-EIP"
+
+  # プライベートサブネットのアウトバウンドインターネットアクセス用パブリックサブネット内NAT Gateway
+  NATGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NATGatewayEIP.AllocationId
+      SubnetId: !Ref PublicSubnet
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-dev-ec2-NAT-Gateway"
+        - Key: Purpose
+          Value: "Outbound internet access for private subnet"
+        - Key: ManagedBy
+          Value: "CloudFormation"
+
+  # パブリックサブネット用ルートテーブル
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref TeamVPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-dev-ec2-PublicRouteTable"
+
+  # Internet Gatewayへのパブリックルート
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: "0.0.0.0/0"
+      GatewayId: !Ref InternetGateway
+
+  # パブリックサブネットをパブリックルートテーブルに関連付け
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  # プライベートサブネット用ルートテーブル
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref TeamVPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-dev-ec2-PrivateRouteTable"
+
+  # NAT Gatewayへのプライベートルート
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: "0.0.0.0/0"
+      NatGatewayId: !Ref NATGateway
+
+  # プライベートサブネットをプライベートルートテーブルに関連付け
+  PrivateSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet
+      RouteTableId: !Ref PrivateRouteTable
+
+  # セキュリティグループ設定
+  # EC2インスタンス用セキュリティグループ - SSM通信用のアウトバウンドHTTPSを許可
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${AWS::StackName}-EC2-SecurityGroup"
+      GroupDescription: "Security group for EC2 instance - allows outbound HTTPS for SSM connectivity"
+      # グループ説明: EC2インスタンス用セキュリティグループ - SSM接続用のアウトバウンドHTTPSを許可
+      VpcId: !Ref TeamVPC
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: "0.0.0.0/0"
+          Description: "Outbound HTTPS for SSM communication"
+          # 説明: SSM通信用のアウトバウンドHTTPS
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-EC2-SecurityGroup"
+        - Key: Purpose
+          Value: "EC2 instance SSM connectivity"
+
+  # VPCエンドポイントセキュリティグループ - EC2セキュリティグループからのインバウンドHTTPSを許可
+  VPCEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${AWS::StackName}-VPCEndpoint-SecurityGroup"
+      GroupDescription: "Security group for VPC endpoints - allows inbound HTTPS from EC2 instances"
+      # グループ説明: VPCエンドポイント用セキュリティグループ - EC2インスタンスからのインバウンドHTTPSを許可
+      VpcId: !Ref TeamVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref EC2SecurityGroup
+          Description: "Inbound HTTPS from EC2 instances for SSM endpoint communication"
+          # 説明: SSMエンドポイント通信用のEC2インスタンスからのインバウンドHTTPS
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-dev-ec2-VPCEndpoint-SecurityGroup"
+        - Key: Purpose
+          Value: "VPC endpoints SSM connectivity"
+
+  # IAM設定
+  # SSMアクセスとCloudWatch権限を持つEC2インスタンス用IAMロール
+  EC2InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-EC2-Instance-Role"
+      Description: "IAM role for EC2 instance with SSM and CloudWatch permissions"
+      # 説明: SSMとCloudWatch権限を持つEC2インスタンス用IAMロール
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+        - arn:aws:iam::aws:policy/AmazonBedrockFullAccess
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-EC2-Instance-Role"
+        - Key: Purpose
+          Value: "EC2 instance SSM and CloudWatch access"
+
+  # EC2インスタンスにアタッチするためのインスタンスプロファイル
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub "${AWS::StackName}-EC2-Instance-Profile"
+      Roles:
+        - !Ref EC2InstanceRole
+
+  # チームメンバー用IAMグループ
+  TeamMembersGroup:
+    Type: AWS::IAM::Group
+    Properties:
+      GroupName: !Sub "${AWS::StackName}-Developers-Group"
+      Path: "/"
+
+  # 特定のEC2インスタンスへのSSMアクセスを許可するカスタムIAMポリシー
+  # 特定のIPアドレスからのみアクセス可能に制限
+  TeamMembersSSMPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub "${AWS::StackName}-TeamMembers-SSM-Policy"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: "AllowSSMSession"
+            Effect: Allow
+            Action:
+              - ssm:StartSession
+              - ssm:TerminateSession
+              - ssm:DescribeSessions
+              - ssm:GetConnectionStatus
+              - ec2:DescribeInstances
+            Resource:
+              - "*"
+            # IPアドレス制限をかけようとしても、EC2から見ればSSMエンドポイントのIPアドレスしか見えないので効かない。
+            #Condition:
+            #  IpAddress:
+            #    aws:SourceIp:
+            #      - "xx.xx.xx.xx/32"
+            #      - "192.168.0.0/24"
+      Groups:
+        - !Ref TeamMembersGroup
+
+  # TeamMembersパラメータに基づく動的IAMユーザー（Fn::ForEachを使用）
+  # 任意の数のチームメンバーに対応
+  "Fn::ForEach::TeamUsers":
+    - MemberName # ← これがプレースホルダー（変数名）
+    - !Ref TeamMembers
+    - "SshUser&{MemberName}": # ← &{} を使う（Cfnのリソース論理IDに、記号（ハイフン）の使用を許可）
+        Type: AWS::IAM::User
+        Properties:
+          UserName: !Sub "${AWS::StackName}-${MemberName}-ssh"
+          Path: "/"
+          Groups:
+            - !Ref TeamMembersGroup
+          Tags:
+            - Key: Name
+              Value: !Sub "${AWS::StackName}-${MemberName}-ssh"
+            - Key: Purpose
+              Value: "Team member SSM access"
+
+  # SSM接続用VPCエンドポイント - AWSサービスとのプライベート通信を有効化
+  # Systems Managerのコア機能用VPCエンドポイント
+  SSMVPCEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref TeamVPC
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ssm"
+      VpcEndpointType: Interface
+      SubnetIds:
+        - !Ref PrivateSubnet
+      SecurityGroupIds:
+        - !Ref VPCEndpointSecurityGroup
+      PrivateDnsEnabled: true
+  # Session Manager通信用のSSM Messages VPCエンドポイント
+  SSMMessagesVPCEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref TeamVPC
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ssmmessages"
+      VpcEndpointType: Interface
+      SubnetIds:
+        - !Ref PrivateSubnet
+      SecurityGroupIds:
+        - !Ref VPCEndpointSecurityGroup
+      PrivateDnsEnabled: true
+
+  # EC2インスタンスとSSM間の通信用EC2 Messages VPCエンドポイント
+  EC2MessagesVPCEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref TeamVPC
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ec2messages"
+      VpcEndpointType: Interface
+      SubnetIds:
+        - !Ref PrivateSubnet
+      SecurityGroupIds:
+        - !Ref VPCEndpointSecurityGroup
+      PrivateDnsEnabled: true
+
+  # Bedrock Runtime用VPCエンドポイント - プライベートサブネットからBedrockへのアクセスを有効化
+  BedrockRuntimeVPCEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref TeamVPC
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.bedrock-runtime"
+      VpcEndpointType: Interface
+      SubnetIds:
+        - !Ref PrivateSubnet
+      SecurityGroupIds:
+        - !Ref VPCEndpointSecurityGroup
+      PrivateDnsEnabled: true
+
+  # EC2インスタンス設定
+  # SSMアクセスとチームメンバーアカウントを持つメイン開発用インスタンス
+  # 起動前にSSM接続が利用可能であることを保証するためVPCエンドポイントに依存
+  TeamEC2Instance:
+    Type: AWS::EC2::Instance
+    DependsOn:
+      - SSMVPCEndpoint
+      - SSMMessagesVPCEndpoint
+      - EC2MessagesVPCEndpoint
+      - BedrockRuntimeVPCEndpoint
+      - PrivateRoute
+    Properties:
+      ImageId: "{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}"
+      InstanceType: !Ref InstanceType
+      SubnetId: !Ref PrivateSubnet
+      SecurityGroupIds:
+        - !Ref EC2SecurityGroup
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      # EBSボリューム（ディスク）の設定
+      # EC2インスタンスに接続するストレージの詳細を定義
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda # ルートボリュームのデバイス名（Amazon Linux 2023のデフォルト）
+          Ebs:
+            VolumeSize: 8 # ディスク容量（GB）- デフォルト8GBから増量した方がいいかも（開発ツールインストール用）
+            VolumeType: gp3 # ボリュームタイプ - gp3は最新の汎用SSD（コスト効率が良く高性能）
+            DeleteOnTermination: true # インスタンス削除時にボリュームも自動削除（データ残留を防ぐ）
+            Encrypted: true # ディスク暗号化を有効化（セキュリティ要件）
+      UserData:
+        Fn::Base64:
+          Fn::Sub:
+            - |
+              #!/bin/bash
+              # 各チームメンバー用の個別Linuxユーザーアカウント作成手順のドキュメントを作成
+              # nodejs, uv等をインストール
+
+              # ログ設定
+              LOG_FILE="/var/log/team-setup.log"
+              # 標準出力をteeコマンドにリダイレクト（画面表示とファイル保存を同時に行う）
+              exec > >(tee -a $LOG_FILE)
+              # 標準エラー出力を標準出力にリダイレクト（エラーもログファイルに記録）
+              exec 2>&1
+
+              # タイムゾーンを東京に設定
+              timedatectl set-timezone Asia/Tokyo
+
+              ##############################################
+              # 全ユーザー用の環境変数を設定
+              echo "環境変数を設定中..."
+
+              cat > /etc/profile.d/aws-bedrock-env.sh << 'PROFILE_EOF'
+              # AWS Bedrock環境変数
+              export AWS_REGION=ap-northeast-1
+              export CLAUDE_CODE_USE_BEDROCK=true
+              export ANTHROPIC_MODEL=jp.anthropic.claude-haiku-4-5-20251001-v1:0
+              export Q_MODEL=jp.anthropic.claude-haiku-4-5-20251001-v1:0
+              PROFILE_EOF
+              chmod +x /etc/profile.d/aws-bedrock-env.sh
+
+              echo "環境変数設定完了"
+              ##############################################
+
+              echo "=== EC2インスタンス初期化開始 $(date) ==="
+
+              # システムパッケージ更新
+              echo "システムパッケージを更新中..."
+              dnf update -y
+
+              # 開発ツールのインストール
+              echo "開発ツールをインストール開始..."
+
+              # Git インストール
+              echo "****** インストール開始: Git... ******"
+              dnf install -y git
+
+              # Node.jsのインストール（Amazon Linux 2023公式リポジトリから）
+              echo "****** インストール開始: Nodejs, npm... ******"
+              dnf install -y nodejs npm
+
+              # Claude Codeのインストール
+              echo "****** インストール開始: Claude Code... ******"
+              npm install -g @anthropic-ai/claude-code
+
+              # Dockerのインストール
+              echo "****** インストール開始: Docker... ******"
+              dnf install -y docker
+              systemctl start docker
+              systemctl enable docker
+              # ec2-userをdockerグループに追加（sudo不要でdockerコマンド実行可能）
+              usermod -aG docker ec2-user
+              # 注意: ssm-userはSSM接続時に自動作成されるため、ここでは追加しない
+
+              # uvのインストール（Python package manager）
+              echo "****** インストール開始: uv... ******"
+              export HOME=/root
+              curl -LsSf https://astral.sh/uv/install.sh | sh
+              # システムディレクトリにコピー（全ユーザがアクセス可能）
+              cp /root/.local/bin/uv /usr/local/bin/
+              cp /root/.local/bin/uvx /usr/local/bin/
+              # 実行権限を設定
+              chmod +x /usr/local/bin/uv
+              chmod +x /usr/local/bin/uvx
+
+              echo "****** インストール完了。バージョン確認... ******"
+              echo "Node.js version: $(node --version)"
+              echo "npm version: $(npm --version)"
+              echo "Claude Code version: $(claude --version)"
+              echo "Git version: $(git --version)"
+              echo "Docker version: $(docker --version)"
+              echo "uv version: $(uv --version)"
+
+              ###################################################
+              # ec2-user用の手動ユーザー作成手順を作成
+              cat > /usr/local/share/CREATE-TEAM-USERS.md << 'MANUAL_EOF'
+              # チーム開発環境 - ユーザー作成手順
+
+              ## 概要
+              このEC2インスタンスは開発環境として設定済みです。
+              チームメンバーのユーザーアカウントは手動で作成してください。
+
+              ## インストール済みツール
+              - Node.js (LTS) + npm
+              - uv (Python package manager)
+              - Claude Code
+              - Git
+              - Docker
+              - タイムゾーン: Asia/Tokyo
+
+              ## 新しいチームメンバーのユーザー作成手順
+              依頼者と管理者、一緒に作業する
+
+              ### 1. SSH用ユーザアカウントのアクセスキーを払出し
+              コンソール画面のアカウントを払い出した後、
+              自分でログインしてアクセスキーを作成する
+
+              ### 2. PCに各種ソフトをインストール
+              参考：
+              - VS Code (社内標準ソフト)
+              - Session Manager (標準外ソフトとして申請要。管理者権限：不要)
+              - AWS CLI (標準外ソフトとして申請要。管理者権限：必要)
+
+              ### 3. VSCodeからの接続方法
+
+              #### 3.1 AWS CLIの設定（アクセスキーの登録）
+              ターミナルで以下のコマンドを実行してAWS認証情報を設定します：
+
+              ```bash
+              aws configure
+              ```
+
+              以下の情報を入力：
+              - AWS Access Key ID: [IAMユーザーのアクセスキーID]
+              - AWS Secret Access Key: [IAMユーザーのシークレットアクセスキー]
+              - Default region name: ap-northeast-1
+              - Default output format: json
+
+              #### 3.2 AWS SSMコマンドで接続試験
+              VS Codeで接続する前に、AWS CLIとSession Managerプラグインが正しく動作するか確認します。
+              ターミナルで以下のコマンドを実行（インスタンスIDは実際の値に置き換え）：
+
+              ```bash
+              aws ssm start-session --target i-xxxxxxxxxxxxxxxxx --region ap-northeast-1
+              ```
+
+              #### 3.3 VS Code拡張機能のインストール
+              VS Codeで以下の拡張機能をインストール：
+              1. Remote - SSH (Microsoft製)
+              2. Remote - SSH: Editing Configuration Files (Microsoft製)
+
+              #### 3.4 SSH設定ファイルの編集
+              VS Codeのコマンドパレット（Ctrl+Shift+P / Cmd+Shift+P）を開き、
+              「Remote-SSH: Open SSH Configuration File...」を選択
+
+              以下の設定を追加（インスタンスIDは実際の値に置き換え）：
+
+              ```
+              Host team-dev-ec2
+                  HostName i-xxxxxxxxxxxxxxxxx
+                  User ssm-user
+                  ProxyCommand aws ssm start-session --target %h --document-name AWS-StartSSHSession --parameters "portNumber=%p"
+                  IdentityFile /dev/null
+                  StrictHostKeyChecking no
+                  UserKnownHostsFile /dev/null
+              ```
+
+              #### 3.5 VS Codeから接続
+              1. VS Codeのコマンドパレットを開く（Ctrl+Shift+P / Cmd+Shift+P）
+              2. 「Remote-SSH: Connect to Host...」を選択
+              3. 「team-dev-ec2」を選択
+              4. 新しいウィンドウが開き、EC2インスタンスに接続されます
+
+              ### 4-1. （アカウントがすでにある場合）ユーザーアカウントに切り替え
+              sudo su - member4
+
+              ### 4-2. （アカウントがない場合）ssm-userログイン後、ターミナルを開いて新しいユーザーを作成
+              # ユーザー作成（例: member4）
+              sudo useradd -m -s /bin/bash member4
+
+              # ホームディレクトリの権限設定
+              sudo chmod 755 /home/member4
+              sudo chown member4:member4 /home/member4
+
+              # 作成確認
+              id member4
+              ls -la /home/member4
+
+              # dockerグループに追加（sudo不要でdockerコマンド実行可能）
+              sudo usermod -aG docker member4
+
+              ### 5. 開発ツールの確認
+              node --version
+              npm --version
+              uv --version
+              claude --version
+              docker --version
+
+              ※ Q Developer CLI について。
+              インストールしようとすると、対話形式になる＆ログインが必要。
+              インストールの際の手順は下記を参照
+              https://docs.aws.amazon.com/ja_jp/amazonq/latest/qdeveloper-ug/command-line-installing.html
+
+              ## IAMユーザーの作成
+              新しいチームメンバーには、CloudFormationテンプレートの
+              TeamMembersパラメータに名前を追加してスタックを更新してください。
+              これによりSSMアクセス権限を持つIAMユーザーが作成されます。
+
+              ## ログファイル
+              - セットアップログ: /var/log/team-setup.log
+              - cloud-initログ: /var/log/cloud-init-output.log
+              MANUAL_EOF
+              ########################################################
+
+              chown root:wheel /usr/local/share/CREATE-TEAM-USERS.md
+              chmod 644 /usr/local/share/CREATE-TEAM-USERS.md
+
+              ########################################################
+              # 共通ウェルカムメッセージファイルを作成
+              echo "共通ウェルカムメッセージファイル作成中..."
+              cat > /etc/team-welcome-message.txt << 'WELCOME_EOF'
+
+
+              ================================================================================
+                                      RAISE開発サーバへようこそ！
+              ================================================================================
+
+              📋 ユーザー作成手順: cat /usr/local/share/CREATE-TEAM-USERS.md
+              📊 インストール済みツール: Node.js (LTS), npm, uv (Python), Claude Code, Docker
+              🕐 タイムゾーン: Asia/Tokyo
+              📝 セットアップログ: /var/log/team-setup.log
+
+              既存ユーザーに切り替える場合:
+                sudo su - <your_username>
+
+              新しいチームメンバーを追加する場合:
+                1. 下記手順書を確認してください
+                    cat /usr/local/share/CREATE-TEAM-USERS.md
+                2. CloudFormationでIAMユーザーも追加してください
+
+              ================================================================================
+
+              WELCOME_EOF
+              ########################################################
+
+              chown root:wheel /etc/team-welcome-message.txt
+              chmod 644 /etc/team-welcome-message.txt
+
+              ########################################################
+              # SSMログイン時のウェルカムメッセージ表示スクリプトを作成
+              # /etc/profile.d/に配置することで、全ユーザー（ssm-user含む）のログイン時に実行される
+              cat > /etc/profile.d/show-welcome-message.sh << 'SCRIPT_EOF'
+              #!/bin/bash
+              # SSMセッション開始時のウェルカムメッセージ表示
+              cat /etc/team-welcome-message.txt
+              SCRIPT_EOF
+              ########################################################
+
+              chmod +x /etc/profile.d/show-welcome-message.sh
+
+              echo "=== EC2インスタンス初期化完了 $(date) ==="
+            - TeamMembersList: !Join [",", !Ref TeamMembers]
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-TeamEC2Instance"
+        - Key: Purpose
+          Value: "Team Development Environment"
+        - Key: "CloudFormationStack"
+          Value: !Ref "AWS::StackName"
+
+Outputs:
+  # EC2インスタンス情報
+  EC2InstanceId:
+    Description: "Instance ID of the team development EC2 instance (use as target for SSM connection)"
+    # チーム開発用EC2インスタンスのインスタンスID（SSM接続のターゲットとして使用）
+    Value: !Ref TeamEC2Instance
+    Export:
+      Name: !Sub "${AWS::StackName}-EC2-Instance-ID"
+
+  # チームメンバー情報
+  TeamMembersList:
+    Description: "List of team members configured in this environment"
+    # この環境に設定されたチームメンバーのリスト
+    Value: !Join [", ", !Ref TeamMembers]
+
+  DeploymentRegion:
+    Description: "AWS region where this stack is deployed"
+    # このスタックがデプロイされたAWSリージョン
+    Value: !Ref "AWS::Region"
