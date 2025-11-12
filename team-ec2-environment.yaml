@@ -576,20 +576,12 @@ Resources:
               # 注意: ssm-userはSSM接続時に自動作成されるため、ここでは追加しない
 
               echo "****** インストール開始: Terraform ******"
-              # HashiCorpのGPGキーをインポート
-              rpm --import https://rpm.releases.hashicorp.com/gpg
-              # HashiCorpのDNFリポジトリ設定ファイルを作成
-              cat <<EOF | tee /etc/yum.repos.d/hashicorp.repo
-              [hashicorp]
-              name=HashiCorp
-              baseurl=https://rpm.releases.hashicorp.com/amazonlinux/\$releasever/\$basearch/stable
-              enabled=1
-              gpgcheck=1
-              gpgkey=https://rpm.releases.hashicorp.com/gpg
-              EOF
-              # リポジトリを有効にしてTerraformをインストール
-              # AL2023では、dnf install -y terraform だけでOKです
-              dnf install -y terraform
+              # 1. 必要なパッケージをインストール
+              sudo dnf install -y dnf-plugins-core
+              # 2. HashiCorpのリポジトリを追加
+              sudo dnf config-manager --add-repo https://rpm.releases.hashicorp.com/AmazonLinux/hashicorp.repo
+              # 3. Terraformをインストール
+              sudo dnf -y install terraform
 
               # uvのインストール（Python package manager）
               echo "****** インストール開始: uv ******"
