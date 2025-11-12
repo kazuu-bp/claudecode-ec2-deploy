@@ -552,25 +552,22 @@ Resources:
               echo "開発ツールをインストール開始..."
 
               # Git インストール
-              echo "****** インストール開始: Git... ******"
+              echo "****** インストール開始: Git ******"
               dnf install -y git
 
               # Node.jsのインストール（Amazon Linux 2023公式リポジトリから）
-              echo "****** インストール開始: Nodejs, npm... ******"
+              echo "****** インストール開始: Nodejs, npm ******"
               # Node.js 22 の NodeSource リポジトリを追加
-              echo "****** NodeSource リポジトリの追加 ******"
               curl -fsSL https://rpm.nodesource.com/setup_22.x | bash -
-
               # Node.js 22 と npm のインストール
-              echo "****** インストール開始: Node.js 22, npm... ******"
               dnf install -y nodejs
 
               # Claude Codeのインストール
-              echo "****** インストール開始: Claude Code... ******"
+              echo "****** インストール開始: Claude Code ******"
               npm install -g @anthropic-ai/claude-code
 
               # Dockerのインストール
-              echo "****** インストール開始: Docker... ******"
+              echo "****** インストール開始: Docker ******"
               dnf install -y docker
               systemctl start docker
               systemctl enable docker
@@ -578,8 +575,24 @@ Resources:
               usermod -aG docker ec2-user
               # 注意: ssm-userはSSM接続時に自動作成されるため、ここでは追加しない
 
+              echo "****** インストール開始: Terraform ******"
+              # HashiCorpのGPGキーをインポート
+              rpm --import https://rpm.releases.hashicorp.com/gpg
+              # HashiCorpのDNFリポジトリ設定ファイルを作成
+              cat <<EOF | tee /etc/yum.repos.d/hashicorp.repo
+              [hashicorp]
+              name=HashiCorp
+              baseurl=https://rpm.releases.hashicorp.com/amazonlinux/\$releasever/\$basearch/stable
+              enabled=1
+              gpgcheck=1
+              gpgkey=https://rpm.releases.hashicorp.com/gpg
+              EOF
+              # リポジトリを有効にしてTerraformをインストール
+              # AL2023では、dnf install -y terraform だけでOKです
+              dnf install -y terraform
+
               # uvのインストール（Python package manager）
-              echo "****** インストール開始: uv... ******"
+              echo "****** インストール開始: uv ******"
               export HOME=/root
               curl -LsSf https://astral.sh/uv/install.sh | sh
               # システムディレクトリにコピー（全ユーザがアクセス可能）
@@ -589,12 +602,13 @@ Resources:
               chmod +x /usr/local/bin/uv
               chmod +x /usr/local/bin/uvx
 
-              echo "****** インストール完了。バージョン確認... ******"
+              echo "****** インストール完了。バージョン確認 ******"
               echo "Node.js version: $(node --version)"
               echo "npm version: $(npm --version)"
               echo "Claude Code version: $(claude --version)"
               echo "Git version: $(git --version)"
               echo "Docker version: $(docker --version)"
+              echo "Terraform version: $(terraform --version)"
               echo "uv version: $(uv --version)"
 
               ###################################################
