@@ -557,7 +557,13 @@ Resources:
 
               # Node.jsのインストール（Amazon Linux 2023公式リポジトリから）
               echo "****** インストール開始: Nodejs, npm... ******"
-              dnf install -y nodejs npm
+              # Node.js 22 の NodeSource リポジトリを追加
+              echo "****** NodeSource リポジトリの追加 ******"
+              curl -fsSL https://rpm.nodesource.com/setup_22.x | bash -
+
+              # Node.js 22 と npm のインストール
+              echo "****** インストール開始: Node.js 22, npm... ******"
+              dnf install -y nodejs
 
               # Claude Codeのインストール
               echo "****** インストール開始: Claude Code... ******"
