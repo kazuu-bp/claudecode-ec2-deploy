@@ -577,11 +577,11 @@ Resources:
 
               echo "****** インストール開始: Terraform ******"
               # 1. 必要なパッケージをインストール
-              sudo dnf install -y dnf-plugins-core
+              dnf install -y dnf-plugins-core
               # 2. HashiCorpのリポジトリを追加
-              sudo dnf config-manager --add-repo https://rpm.releases.hashicorp.com/AmazonLinux/hashicorp.repo
+              dnf config-manager --add-repo https://rpm.releases.hashicorp.com/AmazonLinux/hashicorp.repo
               # 3. Terraformをインストール
-              sudo dnf -y install terraform
+              dnf -y install terraform
 
               # uvのインストール（Python package manager）
               echo "****** インストール開始: uv ******"
